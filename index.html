@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vision Cognition Lab</title>
+<style>
+  :root { --bg:#262626; --panel:#303030; --line:#4a4a4a; --text:#ececec; --dim:#a9a9a9; --accent:#e8e3d3; --blue:#5b9bff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Segoe UI", sans-serif; line-height:1.55; }
+  header { padding:20px 24px 0; max-width:860px; margin:0 auto; }
+  h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; font-weight:600; margin:0 0 10px; }
+  h1 { font-size:28px; } h2 { font-size:22px; } h3 { font-size:17px; }
+  nav { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; border-bottom:1px solid var(--line); }
+  nav button { background:none; color:var(--dim); border:0; border-bottom:3px solid transparent; padding:8px 12px; font:inherit; cursor:pointer; }
+  nav button.active { color:var(--text); border-bottom-color:var(--accent); }
+  nav button:focus-visible, .btn:focus-visible { outline:3px solid var(--blue); outline-offset:2px; }
+  main { max-width:860px; margin:0 auto; padding:20px 24px 60px; }
+  p { margin:0 0 12px; max-width:68ch; }
+  .dim { color:var(--dim); } .small { font-size:14px; }
+  .btn { background:var(--accent); color:#222; border:0; border-radius:4px; padding:9px 16px; font:inherit; cursor:pointer; margin:4px 8px 4px 0; }
+  .btn.ghost { background:none; color:var(--text); border:1px solid var(--line); }
+  .key { display:inline-block; border:1px solid #888; border-radius:4px; padding:0 7px; font-family:monospace; font-size:.95em; }
+  canvas#stage { display:none; background:#262626; border:1px solid var(--line); max-width:100%; height:auto; margin-top:8px; }
+  #status { min-height:22px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(330px, 1fr)); gap:16px; margin:16px 0; }
+  .grid canvas { width:100%; height:auto; background:var(--panel); border:1px solid var(--line); }
+  table { border-collapse:collapse; margin:8px 0 16px; font-size:15px; }
+  th, td { border-bottom:1px solid var(--line); padding:5px 14px 5px 0; text-align:left; }
+  .theme { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:12px; margin:16px 0; }
+  .theme div { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:12px 14px; }
+  .theme p { margin:0; font-size:14px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vision Cognition Lab</h1>
+  <p class="dim">Four short experiments on how we see, attend, remember, and decide.</p>
+  <nav id="nav"></nav>
+</header>
+<main>
+  <div id="info"></div>
+  <div id="status" class="small dim"></div>
+  <canvas id="stage" width="720" height="420"></canvas>
+  <div id="results"></div>
+</main>
+
+<script>
+// ============================================================
+// Core helpers
+// ============================================================
+const $ = (s) => document.querySelector(s);
+const cv = $("#stage"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+const DATA = { posner: [], muller: [], vwm: [], dots: [] };
+let runToken = 0, pending = null;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => r(performance.now())));
+const mean = (a) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+function waitKeys(keys) { return new Promise(res => { pending = { keys, res }; }); }
+document.addEventListener("keydown", (e) => {
+  if (!pending) return;
+  let k = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase(); // "arrowleft", "enter"...
+  if (pending.keys.includes(k)) {
+    e.preventDefault();
+    const p = pending; pending = null;
+    p.res({ key: k, t: performance.now(), shift: e.shiftKey });
+  }
+});
+function cancelAll() { runToken++; if (pending) { const p = pending; pending = null; p.res(null); } }
+
+function showStage(on) { cv.style.display = on ? "block" : "none"; }
+function setInfo(html) { $("#info").innerHTML = html; }
+function setStatus(t) { $("#status").textContent = t; }
+function clear() { ctx.clearRect(0, 0, W, H); }
+function fixation() {
+  ctx.strokeStyle = "#ddd"; ctx.lineWidth = 3; ctx.beginPath();
+  ctx.moveTo(W/2 - 11, H/2); ctx.lineTo(W/2 + 11, H/2);
+  ctx.moveTo(W/2, H/2 - 11); ctx.lineTo(W/2, H/2 + 11); ctx.stroke();
+}
+function msg(text, color = "#ddd", y = H/2) {
+  ctx.fillStyle = color; ctx.font = "24px Georgia"; ctx.textAlign = "center"; ctx.fillText(text, W/2, y);
+}
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function randPositions(n, x0, x1, y0, y1, minD) {
+  const pts = []; let guard = 0;
+  while (pts.length < n && guard++ < 5000) {
+    const p = [x0 + Math.random() * (x1 - x0), y0 + Math.random() * (y1 - y0)];
+    if (pts.every(q => Math.hypot(q[0] - p[0], q[1] - p[1]) >= minD)) pts.push(p);
+  }
+  return pts;
+}
+
+// ============================================================
+// Module descriptions
+// ============================================================
+const MODULES = {
+  posner: { label: "Attention", title: "Attention: spatial cueing",
+    text: `<p>Attention can be pulled to a place before the eyes move. In this task one box flashes, then a yellow dot appears in the left or right box.</p>
+      <p>Keep your eyes on the central cross. Press <span class="key">F</span> if the dot is on the left and <span class="key">J</span> if it is on the right, as fast as you can without mistakes. The flash is on the dot's side on 75% of trials.</p>
+      <p class="dim">Prediction: faster responses when the flash was on the same side as the dot (Posner, 1980). 48 trials, about 3 minutes.</p>`, run: "runPosner" },
+  muller: { label: "Perception", title: "Perception: the Müller-Lyer illusion",
+    text: `<p>Perception is not a copy of the image on the retina. The brain interprets context, such as the fins at the ends of a line.</p>
+      <p>The top line has fins and is always 200 px long. Change the length of the plain bottom line with <span class="key">←</span> and <span class="key">→</span> (hold <span class="key">Shift</span> for big steps) until it looks the same length as the top line. Press <span class="key">Enter</span> to confirm.</p>
+      <p class="dim">Prediction: fins pointing outward make the top line look longer, fins pointing inward make it look shorter. 8 trials, about 2 minutes.</p>`, run: "runMuller" },
+  vwm: { label: "Memory", title: "Memory: visual working memory capacity",
+    text: `<p>Visual working memory holds only a few items at once. Colored squares appear for half a second, disappear, and then come back.</p>
+      <p>Press <span class="key">S</span> if every square has the same color as before, or <span class="key">D</span> if one square changed color.</p>
+      <p class="dim">Prediction: accuracy drops as the number of squares goes up, with a capacity of about 3 to 4 items (Luck &amp; Vogel, 1997). 32 trials, about 4 minutes.</p>`, run: "runVWM" },
+  dots: { label: "Decision", title: "Decision-making: evidence, speed and confidence",
+    text: `<p>Two clouds of dots flash for one second. Decide which cloud has more dots. Press <span class="key">F</span> for left or <span class="key">J</span> for right, then rate your confidence: <span class="key">1</span> guess, <span class="key">2</span> fairly sure, <span class="key">3</span> certain.</p>
+      <p>Do not try to count the dots. Go with your first impression.</p>
+      <p class="dim">Prediction: when the difference is small you are slower, less accurate and less confident. This is the pattern that evidence-accumulation (drift-diffusion) models explain. 40 trials, about 4 minutes.</p>`, run: "runDots" }
+};
+const ORDER = ["home", "posner", "muller", "vwm", "dots", "results"];
+
+function buildNav() {
+  const nav = $("#nav");
+  nav.innerHTML = "";
+  for (const id of ORDER) {
+    const b = document.createElement("button");
+    b.textContent = id === "home" ? "Overview" : id === "results" ? "Results" : MODULES[id].label;
+    b.dataset.id = id;
+    b.onclick = () => show(id);
+    nav.appendChild(b);
+  }
+}
+function markNav(id) { document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("active", b.dataset.id === id)); }
+
+function show(id) {
+  cancelAll(); showStage(false); setStatus(""); $("#results").innerHTML = ""; markNav(id);
+  if (id === "home") {
+    setInfo(`<h2>What this app does</h2>
+      <p>Vision is the starting point of cognition. What we see depends on where we attend, what we hold in memory, and how we decide. These four tasks each target one link in that chain. Every task runs in your browser and records reaction times and accuracy.</p>
+      <div class="theme">
+        <div><h3>Attention</h3><p>Spatial cueing task. Measures how a cue speeds up responses at a location.</p></div>
+        <div><h3>Perception</h3><p>Müller-Lyer illusion. Measures how context distorts perceived length.</p></div>
+        <div><h3>Memory</h3><p>Change detection. Estimates visual working memory capacity (K).</p></div>
+        <div><h3>Decision</h3><p>Dot comparison with confidence. Links difficulty to speed, accuracy and confidence.</p></div>
+      </div>
+      <p>Do the four tasks in order (about 12 minutes), then open <b>Results</b> to see your own data, compare it with published effects, and download a CSV file.</p>
+      <button class="btn" onclick="show('posner')">Start with attention</button>`);
+    return;
+  }
+  if (id === "results") { setInfo("<h2>Your results</h2>"); renderResults(); return; }
+  const m = MODULES[id];
+  setInfo(`<h2>${m.title}</h2>${m.text}<button class="btn" onclick="${m.run}()">Start task</button>`);
+}
+
+function finish(id) {
+  showStage(false); setStatus("");
+  const i = ORDER.indexOf(id), next = ORDER[i + 1];
+  const nextBtn = next && next !== "results" ? `<button class="btn ghost" onclick="show('${next}')">Next: ${MODULES[next].label}</button>` : "";
+  setInfo(`<h2>Task finished</h2><p>Your data are saved in this page.</p>
+    <button class="btn" onclick="show('results')">See results</button>${nextBtn}`);
+}
+
+// ============================================================
+// 1) ATTENTION: Posner cueing
+// ============================================================
+function drawPosner(cue, target) {
+  clear();
+  for (const s of ["left", "right"]) {
+    const x = W/2 + (s === "left" ? -180 : 180), y = H/2;
+    ctx.lineWidth = cue === s ? 9 : 3; ctx.strokeStyle = cue === s ? "#fff" : "#777";
+    ctx.strokeRect(x - 45, y - 45, 90, 90);
+    if (target === s) { ctx.fillStyle = "#facc15"; ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill(); }
+  }
+  fixation();
+}
+async function runPosner() {
+  cancelAll(); const me = runToken, alive = () => me === runToken;
+  DATA.posner = []; setInfo(`<h2>${MODULES.posner.title}</h2><p class="dim"><span class="key">F</span> = dot on left, <span class="key">J</span> = dot on right</p>`);
+  showStage(true);
+  let trials = [];
+  for (const side of ["left", "right"]) for (let i = 0; i < 24; i++) trials.push({ side, valid: i < 18 });
+  shuffle(trials);
+  for (let i = 0; i < trials.length; i++) {
+    const t = trials[i];
+    const cueSide = t.valid ? t.side : (t.side === "left" ? "right" : "left");
+    setStatus(`Trial ${i + 1} of ${trials.length}`);
+    drawPosner(); await sleep(700 + Math.random() * 500); if (!alive()) return;
+    drawPosner(cueSide); await sleep(100); if (!alive()) return;
+    drawPosner(); await sleep(50); if (!alive()) return;
+    drawPosner(null, t.side); const t0 = await nextFrame();
+    const r = await waitKeys(["f", "j"]); if (!r || !alive()) return;
+    const resp = r.key === "f" ? "left" : "right", ok = resp === t.side;
+    DATA.posner.push({ trial: i + 1, condition: t.valid ? "valid" : "invalid", level: t.side, response: resp, correct: ok ? 1 : 0, rt_ms: (r.t - t0).toFixed(1), value: "" });
+    drawPosner();
+    if (!ok) { msg("Wrong key", "#ff7b7b", H/2 + 90); await sleep(500); } else await sleep(250);
+    if (!alive()) return;
+  }
+  finish("posner");
+}
+
+// ============================================================
+// 2) PERCEPTION: Müller-Lyer illusion (method of adjustment)
+// ============================================================
+function drawML(y, len, fins) {
+  const xl = W/2 - len/2, xr = W/2 + len/2;
+  ctx.strokeStyle = "#eee"; ctx.lineWidth = 3;
+  line(xl, y, xr, y);
+  if (fins) {
+    const f = 30, a = Math.PI / 6, dx = f * Math.cos(a), dy = f * Math.sin(a), s = fins === "out" ? 1 : -1;
+    line(xl, y, xl - s * dx, y - dy); line(xl, y, xl - s * dx, y + dy);
+    line(xr, y, xr + s * dx, y - dy); line(xr, y, xr + s * dx, y + dy);
+  }
+}
+async function runMuller() {
+  cancelAll(); const me = runToken, alive = () => me === runToken;
+  DATA.muller = []; setInfo(`<h2>${MODULES.muller.title}</h2><p class="dim"><span class="key">←</span> <span class="key">→</span> change length (Shift = big steps), <span class="key">Enter</span> confirm</p>`);
+  showStage(true);
+  const STD = 200;
+  const trials = shuffle(["out", "out", "out", "out", "in", "in", "in", "in"]);
+  const starts = shuffle([130, 150, 260, 290, 130, 150, 260, 290]);
+  for (let i = 0; i < trials.length; i++) {
+    let len = starts[i]; const fins = trials[i];
+    setStatus(`Trial ${i + 1} of ${trials.length}`);
+    const draw = () => { clear(); drawML(130, STD, fins); drawML(290, len, null); };
+    draw(); const t0 = await nextFrame();
+    while (true) {
+      const r = await waitKeys(["arrowleft", "arrowright", "enter"]); if (!r || !alive()) return;
+      if (r.key === "enter") { DATA.muller.push({ trial: i + 1, condition: fins === "out" ? "outward fins" : "inward fins", level: STD, response: "enter", correct: "", rt_ms: (r.t - t0).toFixed(1), value: len.toFixed(0) }); break; }
+      const step = r.shift ? 10 : 2;
+      len += r.key === "arrowright" ? step : -step;
+      len = Math.max(40, Math.min(420, len)); draw();
+    }
+    clear(); await sleep(400); if (!alive()) return;
+  }
+  finish("muller");
+}
+
+// ============================================================
+// 3) MEMORY: visual working memory change detection
+// ============================================================
+const VWM_COLORS = ["#e0453a", "#3b82f6", "#22c55e", "#facc15", "#a855f7", "#f97316", "#14b8a6", "#ffffff"];
+function drawSquares(pos, cols) {
+  clear();
+  pos.forEach((p, i) => { ctx.fillStyle = cols[i]; ctx.fillRect(p[0] - 15, p[1] - 15, 30, 30); });
+}
+async function runVWM() {
+  cancelAll(); const me = runToken, alive = () => me === runToken;
+  DATA.vwm = []; setInfo(`<h2>${MODULES.vwm.title}</h2><p class="dim"><span class="key">S</span> = same, <span class="key">D</span> = one square changed</p>`);
+  showStage(true);
+  let trials = [];
+  for (const n of [2, 4, 6, 8]) for (let i = 0; i < 8; i++) trials.push({ n, change: i < 4 });
+  shuffle(trials);
+  for (let i = 0; i < trials.length; i++) {
+    const t = trials[i];
+    setStatus(`Trial ${i + 1} of ${trials.length}`);
+    const pos = randPositions(t.n, 80, W - 80, 60, H - 60, 80);
+    const cols = Array.from({ length: t.n }, () => VWM_COLORS[Math.floor(Math.random() * VWM_COLORS.length)]);
+    clear(); fixation(); await sleep(500); if (!alive()) return;
+    drawSquares(pos, cols); await sleep(500); if (!alive()) return;
+    clear(); fixation(); await sleep(900); if (!alive()) return;
+    const test = cols.slice();
+    if (t.change) {
+      const k = Math.floor(Math.random() * t.n);
+      const options = VWM_COLORS.filter(c => c !== cols[k]);
+      test[k] = options[Math.floor(Math.random() * options.length)];
+    }
+    drawSquares(pos, test); const t0 = await nextFrame();
+    const r = await waitKeys(["s", "d"]); if (!r || !alive()) return;
+    const said = r.key === "d", ok = said === t.change;
+    DATA.vwm.push({ trial: i + 1, condition: t.change ? "change" : "same", level: t.n, response: said ? "D" : "S", correct: ok ? 1 : 0, rt_ms: (r.t - t0).toFixed(1), value: "" });
+    clear(); await sleep(500); if (!alive()) return;
+  }
+  finish("vwm");
+}
+
+// ============================================================
+// 4) DECISION: dot comparison with confidence
+// ============================================================
+function dotCloud(n, cx) {
+  const pts = randPositions(n, cx - 130, cx + 130, 70, H - 70, 11);
+  ctx.fillStyle = "#eee";
+  for (const p of pts) { ctx.beginPath(); ctx.arc(p[0], p[1], 3.2, 0, Math.PI * 2); ctx.fill(); }
+}
+async function runDots() {
+  cancelAll(); const me = runToken, alive = () => me === runToken;
+  DATA.dots = []; setInfo(`<h2>${MODULES.dots.title}</h2><p class="dim"><span class="key">F</span> = left has more, <span class="key">J</span> = right has more; then confidence <span class="key">1</span> <span class="key">2</span> <span class="key">3</span></p>`);
+  showStage(true);
+  let trials = [];
+  for (const d of [4, 8, 16, 32]) for (let i = 0; i < 10; i++) trials.push({ d, more: i % 2 ? "left" : "right" });
+  shuffle(trials);
+  const BASE = 50;
+  for (let i = 0; i < trials.length; i++) {
+    const t = trials[i];
+    setStatus(`Trial ${i + 1} of ${trials.length}`);
+    clear(); fixation(); await sleep(600); if (!alive()) return;
+    const nL = t.more === "left" ? BASE + t.d : BASE, nR = t.more === "right" ? BASE + t.d : BASE;
+    clear(); dotCloud(nL, W/2 - 170); dotCloud(nR, W/2 + 170); const t0 = await nextFrame();
+    const hide = setTimeout(() => { clear(); fixation(); }, 1000);
+    const r = await waitKeys(["f", "j"]); clearTimeout(hide); if (!r || !alive()) return;
+    const resp = r.key === "f" ? "left" : "right", ok = resp === t.more, rt = r.t - t0;
+    clear(); msg("How sure were you?", "#ddd", H/2 - 10);
+    ctx.font = "18px system-ui"; ctx.fillStyle = "#aaa"; ctx.fillText("1 = guess    2 = fairly sure    3 = certain", W/2, H/2 + 28);
+    const c = await waitKeys(["1", "2", "3"]); if (!c || !alive()) return;
+    DATA.dots.push({ trial: i + 1, condition: t.d, level: t.more, response: resp, correct: ok ? 1 : 0, rt_ms: rt.toFixed(1), value: c.key });
+    clear(); await sleep(300); if (!alive()) return;
+  }
+  finish("dots");
+}
+
+// ============================================================
+// Results
+// ============================================================
+function chart(canvas, o) {
+  const c = canvas.getContext("2d"), w = canvas.width, h = canvas.height;
+  c.clearRect(0, 0, w, h);
+  c.fillStyle = "#ececec"; c.font = "600 15px Georgia"; c.textAlign = "left"; c.fillText(o.title, 12, 22);
+  const vals = o.values;
+  if (!vals.length || vals.every(v => !isFinite(v))) { c.fillStyle = "#999"; c.font = "14px system-ui"; c.fillText("No data yet. Complete this task first.", 12, h / 2); return; }
+  const L = 52, R = 16, T = 40, B = 40, pw = w - L - R, ph = h - T - B;
+  const fin = vals.filter(isFinite);
+  const maxV = (o.yMax != null ? o.yMax : (Math.max(0, ...fin) * 1.18 || 1));
+  let minV = Math.min(0, ...fin); minV = minV < 0 ? minV * 1.25 : 0;
+  const Y = (v) => T + ph * (1 - (v - minV) / (maxV - minV));
+  c.font = "11px system-ui"; c.textAlign = "right"; c.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const v = minV + (maxV - minV) * i / 4, y = Y(v);
+    c.strokeStyle = "#444"; c.beginPath(); c.moveTo(L, y); c.lineTo(w - R, y); c.stroke();
+    c.fillStyle = "#aaa"; c.fillText(v.toFixed(o.dec || 0), L - 6, y + 4);
+  }
+  c.strokeStyle = "#999"; c.beginPath(); c.moveTo(L, Y(0)); c.lineTo(w - R, Y(0)); c.stroke();
+  c.save(); c.translate(13, T + ph / 2); c.rotate(-Math.PI / 2); c.textAlign = "center"; c.fillStyle = "#aaa"; c.fillText(o.yLabel || "", 0, 0); c.restore();
+  const n = vals.length, step = pw / n, pts = [];
+  vals.forEach((v, i) => {
+    const x = L + step * (i + 0.5);
+    c.textAlign = "center"; c.fillStyle = "#ccc"; c.font = "12px system-ui"; c.fillText(o.labels[i], x, h - 14);
+    if (!isFinite(v)) return;
+    if (o.type === "line") { pts.push([x, Y(v)]); }
+    else { c.fillStyle = (o.colors && o.colors[i]) || "#7aa7ff"; const bw = step * 0.5; c.fillRect(x - bw / 2, Math.min(Y(0), Y(v)), bw, Math.abs(Y(0) - Y(v))); }
+    c.fillStyle = "#fff"; c.font = "12px system-ui"; c.fillText(v.toFixed(o.dec || 0), x, (v >= 0 ? Y(v) - 6 : Y(v) + 14));
+  });
+  if (o.type === "line") {
+    c.strokeStyle = "#7aa7ff"; c.lineWidth = 2.5; c.beginPath(); pts.forEach((p, i) => i ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); c.stroke();
+    c.fillStyle = "#7aa7ff"; pts.forEach(p => { c.beginPath(); c.arc(p[0], p[1], 4.5, 0, Math.PI * 2); c.fill(); });
+  }
+}
+
+function renderResults() {
+  const R = $("#results");
+  R.innerHTML = `
+    <div class="grid">
+      <canvas id="c1" width="420" height="270"></canvas>
+      <canvas id="c2" width="420" height="270"></canvas>
+      <canvas id="c3" width="420" height="270"></canvas>
+      <canvas id="c4" width="420" height="270"></canvas>
+    </div>
+    <div id="summary"></div>
+    <button class="btn" id="dl">Download data (CSV)</button>
+    <button class="btn ghost" id="clr">Clear all data</button>`;
+  const notes = [];
+
+  // Attention
+  const okP = DATA.posner.filter(r => r.correct === 1 && +r.rt_ms > 100 && +r.rt_ms < 1500);
+  const pv = mean(okP.filter(r => r.condition === "valid").map(r => +r.rt_ms));
+  const pi = mean(okP.filter(r => r.condition === "invalid").map(r => +r.rt_ms));
+  chart($("#c1"), { title: "Attention: RT by cue validity", labels: ["Valid", "Invalid"], values: [pv, pi], colors: ["#5fd38d", "#ff8a7a"], yLabel: "Mean RT (ms)" });
+  if (isFinite(pv) && isFinite(pi)) {
+    const e = pi - pv;
+    notes.push(`<h3>Attention</h3><p>Validity effect: <b>${e.toFixed(0)} ms</b>. ` + (e > 0
+      ? `You responded faster when the cue was on the target's side. The cue captured attention, so the target was processed sooner at that location, as in Posner (1980).`
+      : `No speed advantage for valid cues in your data. With only 48 trials this is noisy, so repeat the task or pool several people.`) + `</p>`);
+  }
+
+  // Perception
+  const ml = (cond) => DATA.muller.filter(r => r.condition === cond).map(r => +r.value - +r.level);
+  const mo = mean(ml("outward fins")), mi = mean(ml("inward fins"));
+  chart($("#c2"), { title: "Perception: illusion size (px)", labels: ["Outward fins", "Inward fins"], values: [mo, mi], colors: ["#ffb85c", "#7aa7ff"], yLabel: "Adjusted minus 200 px", dec: 1 });
+  if (isFinite(mo) && isFinite(mi)) {
+    notes.push(`<h3>Perception</h3><p>With outward fins you set the plain line <b>${mo.toFixed(1)} px</b> away from 200 px; with inward fins, <b>${mi.toFixed(1)} px</b>. A positive number means the fin line looked longer than it was. The classic result is longer for outward fins and shorter for inward fins, which shows perceived length depends on context, not only on the retinal image.</p>`);
+  }
+
+  // Memory
+  const ks = [2, 4, 6, 8].map(n => {
+    const ch = DATA.vwm.filter(r => r.level === n && r.condition === "change"), sm = DATA.vwm.filter(r => r.level === n && r.condition === "same");
+    if (!ch.length || !sm.length) return NaN;
+    const hit = ch.filter(r => r.response === "D").length / ch.length, fa = sm.filter(r => r.response === "D").length / sm.length;
+    return n * (hit - fa);
+  });
+  chart($("#c3"), { title: "Memory: capacity K by set size", labels: ["2", "4", "6", "8"], values: ks, type: "line", yLabel: "K (items)", dec: 1 });
+  const kf = ks.filter(isFinite);
+  if (kf.length) {
+    notes.push(`<h3>Memory</h3><p>Estimated capacity (best K): <b>${Math.max(...kf).toFixed(1)} items</b>. K is computed as set size × (hit rate − false-alarm rate). It usually rises up to about 3 to 4 items and then levels off, which is the limit of visual working memory (Luck &amp; Vogel, 1997; Cowan, 2001). With 8 trials per set size the estimate is rough.</p>`);
+  }
+
+  // Decision
+  const levels = [4, 8, 16, 32];
+  const dstat = levels.map(d => {
+    const rows = DATA.dots.filter(r => r.condition === d);
+    const good = rows.filter(r => r.correct === 1);
+    return { d, n: rows.length, acc: rows.length ? 100 * good.length / rows.length : NaN, rt: mean(good.map(r => +r.rt_ms)), conf: mean(rows.map(r => +r.value)) };
+  });
+  chart($("#c4"), { title: "Decision: accuracy by difficulty", labels: levels.map(d => "+" + d + " dots"), values: dstat.map(s => s.acc), yLabel: "Accuracy (%)", yMax: 100, colors: ["#ff8a7a", "#ffb85c", "#c9d66b", "#5fd38d"] });
+  if (dstat.some(s => s.n)) {
+    notes.push(`<h3>Decision-making</h3><table><tr><th>Dot difference</th><th>Accuracy</th><th>Correct RT</th><th>Confidence (1 to 3)</th></tr>` +
+      dstat.map(s => `<tr><td>+${s.d}</td><td>${isFinite(s.acc) ? s.acc.toFixed(0) + "%" : "-"}</td><td>${isFinite(s.rt) ? s.rt.toFixed(0) + " ms" : "-"}</td><td>${isFinite(s.conf) ? s.conf.toFixed(2) : "-"}</td></tr>`).join("") +
+      `</table><p>As the evidence gets weaker, accuracy and confidence usually fall and RT rises. Evidence-accumulation models such as the drift-diffusion model explain this with a lower drift rate on hard trials. Confidence that tracks accuracy is a sign of good metacognition.</p>`);
+  }
+
+  $("#summary").innerHTML = notes.length ? notes.join("") : `<p class="dim">Complete at least one task to see an interpretation here.</p>`;
+  $("#dl").onclick = downloadCSV;
+  $("#clr").onclick = () => { if (confirm("Delete all recorded data?")) { for (const k in DATA) DATA[k] = []; renderResults(); } };
+}
+
+function downloadCSV() {
+  const cols = ["module", "trial", "condition", "level", "response", "correct", "rt_ms", "value"];
+  const lines = [cols.join(",")];
+  for (const m of Object.keys(DATA)) for (const r of DATA[m]) lines.push([m, ...cols.slice(1).map(c => r[c])].join(","));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
+  a.download = `vision_lab_${Date.now()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+buildNav();
+show("home");
+</script>
+</body>
+</html>
