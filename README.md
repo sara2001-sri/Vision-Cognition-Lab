@@ -3,7 +3,7 @@
 An interactive web app with four short experiments that show how vision connects to attention,
 perception, memory, and decision-making. It runs in the browser with no installation.
 
-**Live demo:** _add your GitHub Pages link here after publishing_
+
 
 ## Tasks and the science behind them
 
@@ -18,10 +18,7 @@ perception, memory, and decision-making. It runs in the browser with no installa
 Open `index.html` in Chrome, Edge, or Firefox. Do the four tasks (about 12 minutes), then open **Results**.
 Use **Download data (CSV)** to save the data.
 
-## Publish it (so a professor can click and try it)
-1. Create a GitHub repository and upload these files.
-2. Go to Settings > Pages, choose the `main` branch and the root folder, and save.
-3. Paste the resulting link in this README and in your email.
+
 
 ## Data format
 `module, trial, condition, level, response, correct, rt_ms, value`
@@ -37,11 +34,6 @@ Use **Download data (CSV)** to save the data.
 
 ## Ideas for extension
 - Add a webcam or eye-tracker gaze measure to the cueing task.
-- Fit a drift-diffusion model to the dot task data (for example with PyDDM).
+- Fit a drift-diffusion model to the dot task data .
 - Add a saliency-model comparison for attention.
 
-## References
-- Posner, M. I. (1980). Orienting of attention. *Quarterly Journal of Experimental Psychology, 32*(1), 3-25.
-- Luck, S. J., & Vogel, E. K. (1997). The capacity of visual working memory for features and conjunctions. *Nature, 390*, 279-281.
-- Cowan, N. (2001). The magical number 4 in short-term memory. *Behavioral and Brain Sciences, 24*(1), 87-114.
-- Ratcliff, R., & McKoon, G. (2008). The diffusion decision model. *Neural Computation, 20*(4), 873-922.
